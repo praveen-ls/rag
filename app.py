@@ -5,6 +5,10 @@ import numpy as np
 import google.generativeai as genai
 from datetime import datetime
 from sentence_transformers import SentenceTransformer
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+import tempfile
+import os
 defaults = {
     "api_key": None,
     "llm": None,
@@ -21,43 +25,93 @@ for k, v in defaults.items():
         st.session_state[k] = v
 def row_to_text(row,df):
         return " | ".join([f"{col}: {row[col]}" for col in df.columns])
-
+def process_pdf(uploaded_file):
+    """Extract and chunk text from PDF"""
+    
+    # Save uploaded file to temporary location
+    # (LangChain's PyPDFLoader needs a file path)
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        tmp_file.write(uploaded_file.read())
+        tmp_path = tmp_file.name
+    
+    try:
+        # Load PDF
+        loader = PyPDFLoader(tmp_path)
+        pages = loader.load()
+        
+        # Split into chunks
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            length_function=len,
+        )
+        chunks = text_splitter.split_documents(pages)
+        
+        # Extract text from chunks
+        texts = [chunk.page_content for chunk in chunks]
+        
+        return texts, len(pages)  # Return texts and page count
+        
+    finally:
+        # Clean up temp file
+        os.unlink(tmp_path)
 @st.cache_resource
 def load_model():
     return SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 @st.cache_data
 def process_files(uploaded_file):
-    df = pd.read_csv(uploaded_file)
-    
-    texts = [row_to_text(row,df) for _, row in df.iterrows()]
-    row_indices = list(df.index)
-
+    name=uploaded_file.name
+    if name.endswith(".pdf"):
+        texts, page_count = process_pdf(uploaded_file)
+        metadata = {'type': 'pdf', 'pages': page_count}
+        df=None
+        row_indices=None
+    elif name.endswith(".csv"):
+        
+        df = pd.read_csv(uploaded_file)
+        
+        texts = [row_to_text(row,df) for _, row in df.iterrows()]
+        metadata = {'type': 'csv', 'rows': df.shape[0]}
+        row_indices = list(df.index)
+    else:
+        raise ValueError("Unsupported file type")
     if uploaded_file:
         st.session_state.messages = []
 
+    
     model = load_model()
     embeddings = model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
     embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
-    return df,texts,embeddings,row_indices 
+    return df,texts,embeddings,row_indices,metadata 
 
     
 st.title("RAG")  
 
     
-uploaded_file = st.file_uploader("Choose file", type=['csv'])
+uploaded_file = st.file_uploader("Choose file", type=['pdf','csv'])
 
 if uploaded_file:  
-    df,texts,embeddings,row_indices =process_files(uploaded_file)
+    df,texts,embeddings,row_indices,metadata =process_files(uploaded_file)
     st.session_state.model = load_model()
     st.session_state.df = df
     st.session_state.texts = texts
     st.session_state.embeddings = embeddings
     st.session_state.row_indices=row_indices
-    name=uploaded_file.name
-    st.write("File: ",name)
-    st.write("rows: ",df.shape[0])  
-    with st.expander("Preview Dataset"):
-        st.dataframe(df.head(5))
+    if metadata['type'] == 'pdf':
+        col1, col2, col3 = st.columns(3)
+        col1.metric("File", uploaded_file.name)
+        col2.metric("Pages", metadata['pages'])
+        col3.metric("Chunks", len(texts))
+        
+    elif metadata['type'] == 'csv':
+        col1, col2, col3 = st.columns(3)
+        col1.metric("File", uploaded_file.name)
+        col2.metric("Rows", metadata['rows'])
+        col3.metric("Chunks", len(texts))
+    
+    if metadata['type'] == 'csv' and 'df' in st.session_state:
+        with st.expander("Preview Dataset"):
+            st.dataframe(st.session_state.df.head(10))
     
 b=st.sidebar
 b.title("API Key")
@@ -94,12 +148,11 @@ def get_resp(prompt):
         return f"Error: {str(e)}"
 
 #Reterieve rows most related to the question
-def retrieve_rows(query: str, top_k: int = 5):
+def retrieve_rows(query: str, top_k: int = 50):
     sbert_model = st.session_state.model
     embeddings = st.session_state.embeddings
     texts = st.session_state.texts
     row_indices= st.session_state.row_indices
-    df = st.session_state.df
     q_emb = sbert_model.encode([query], convert_to_numpy=True)[0]
     q_emb = q_emb / np.linalg.norm(q_emb)
 
@@ -114,7 +167,7 @@ def retrieve_rows(query: str, top_k: int = 5):
 
     results = []
     for idx in top_idx:
-        row_idx = row_indices[idx]
+        row_idx = row_indices[idx] if row_indices is not None else None
         row_text = texts[idx]
         score = float(scores[idx])
         results.append((row_idx, row_text, score))
@@ -132,7 +185,7 @@ def rag_answer(query):
     context_block = "\n\n".join([text for _, text, _ in retrieved_rows])
 
     prompt = f"""
-    You should ack as a data analyst. Use ONLY the following rows from the dataset.
+    You are a helpful assistant. Use ONLY the following information to answer the question.
 
     Dataset Rows:
     {context_block}
@@ -141,7 +194,7 @@ def rag_answer(query):
     {query}
 
     Now answer clearly,
-    and show any calculations you perform.
+    and If the answer is not in the context, say so.
     """
 
     answer = get_resp(prompt)
@@ -161,12 +214,8 @@ for role, msg in st.session_state.messages:
 q = st.chat_input("Ask a question about the dataset...", disabled=not ready)
 
 if q:
-    # Save user message
     st.session_state.messages.append(("user", q))
-    # Generate answer
     with st.spinner("Thinking..."):
         answer = rag_answer(q)
-    # Save assistant message
     st.session_state.messages.append(("assistant", answer))
-    # Force rerun so messages show once
     st.rerun()
