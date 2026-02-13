@@ -148,7 +148,7 @@ def get_resp(prompt):
         return f"Error: {str(e)}"
 
 #Reterieve rows most related to the question
-def retrieve_rows(query: str, top_k: int = 50):
+def retrieve_rows(query: str, top_k: int = 10):
     sbert_model = st.session_state.model
     embeddings = st.session_state.embeddings
     texts = st.session_state.texts
@@ -184,6 +184,16 @@ def rag_answer(query):
 
     context_block = "\n\n".join([text for _, text, _ in retrieved_rows])
 
+    avg_score = sum(score for _, _, score in retrieved_rows) / len(retrieved_rows)
+    
+    if avg_score > 0.7:
+        st.success(f"High confidence ({avg_score:.0%})")
+    elif avg_score > 0.4:
+        st.warning(f"Medium confidence ({avg_score:.0%})")
+    else:
+        st.error(f"Low confidence ({avg_score:.0%}) - answer may not be accurate")
+    
+
     prompt = f"""
     You are a helpful assistant. Use ONLY the following information to answer the question.
 
@@ -198,24 +208,71 @@ def rag_answer(query):
     """
 
     answer = get_resp(prompt)
-    return answer
+    with st.expander("View Sources Used"):
+        for i, (idx, text, score) in enumerate(retrieved_rows):
+            st.write(f"**Chunk {i+1}** (relevance: {score:.2f})")
+            st.caption(text[:300] + "...")
+            st.divider()
+    return answer,avg_score, retrieved_rows
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
     
 
     
+if st.session_state.messages:
+    # Build text content
+    chat_text = "\n\n".join([
+        f"{role.upper()}: {msg}" 
+        for role, msg,meta in st.session_state.messages
+    ])
+    
+    st.download_button(
+        label="Download Chat",
+        data=chat_text,
+        file_name="chat_history.txt",
+        mime="text/plain"
+    )
 
-for role, msg in st.session_state.messages:
+for role, msg, meta in st.session_state.messages:
     with st.chat_message(role):
         st.write(msg)
+        
+        if role == "assistant" and meta:
+            score = meta["score"]
+            chunks = meta["chunks"]
+            
+            # Confidence score
+            if score > 0.5:
+                st.success(f"High confidence ({score:.0%})")
+            elif score > 0.3:
+                st.warning(f"Medium confidence ({score:.0%})")
+            else:
+                st.error(f"Low confidence ({score:.0%})")
+            
+            # Retrieved chunks
+            with st.expander(f"Sources ({len(chunks)} chunks)"):
+                for i, (idx, text, chunk_score) in enumerate(chunks):
+                    st.write(f"**Chunk {i+1}** (relevance: {chunk_score:.2f})")
+                    preview = text[:300] + "..." if len(text) > 300 else text
+                    st.caption(preview)
+                    st.divider()
 
 # ---------------- CHAT INPUT ----------------
 q = st.chat_input("Ask a question about the dataset...", disabled=not ready)
 
 if q:
-    st.session_state.messages.append(("user", q))
+    # Save user message
+    st.session_state.messages.append(("user", q,None))
+    # Generate answer
     with st.spinner("Thinking..."):
-        answer = rag_answer(q)
-    st.session_state.messages.append(("assistant", answer))
+        answer,avg_score, chunks = rag_answer(q)
+    # Save assistant message
+    st.session_state.messages.append((
+        "assistant", 
+        answer, 
+        {"score": avg_score, "chunks": chunks}
+    ))
+    
+    # Force rerun so messages show once
     st.rerun()
