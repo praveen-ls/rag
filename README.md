@@ -1,6 +1,6 @@
 # RAG-Powered Document Q&A System
 
-A production-ready Retrieval-Augmented Generation (RAG) application built with Streamlit that enables intelligent question-answering over PDF documents and CSV datasets using Google's Gemini LLM and semantic search.
+A hybrid RAG + agentic data analysis system that combines semantic retrieval with dynamic computation over structured data. It is built with Streamlit that enables intelligent question-answering over PDF documents and CSV datasets using Google's Gemini LLM and semantic search. 
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![Streamlit](https://img.shields.io/badge/streamlit-1.28+-red.svg)
@@ -16,7 +16,12 @@ A production-ready Retrieval-Augmented Generation (RAG) application built with S
 - **Chat History**: Maintains conversation context with downloadable chat logs
 - **Robust Error Handling**: Production-ready error management and logging
 - **Interactive UI**: Clean Streamlit interface with real-time processing
-
+- **Agentic RAG Pipeline**: Dynamically decides whether to retrieve context (SEARCH) or perform data computations (COMPUTE)
+- **Natural Language Data Analysis**: Converts user queries into executable pandas operations for CSV datasets
+- **Hybrid Reasoning Engine**: Combines semantic retrieval (PDF) with structured computation (CSV)
+- **Safe Code Execution**: Executes LLM-generated pandas code in a sandboxed environment
+- **Multi-step Query Planning**: Iteratively refines search and computation steps before answering
+  
 ## 🏗️ Architecture
 
 ```
@@ -24,13 +29,20 @@ User Query
     ↓
 Query Embedding (SentenceTransformer)
     ↓
-Semantic Search (Cosine Similarity)
-    ↓
-Top-K Retrieval
-    ↓
-Context Assembly
-    ↓
-LLM Generation (Gemini 2.0)
+Agent Reasoning (LLM decides next action)  
+    ↓  
+ ┌───────────────┬───────────────┐  
+ │ SEARCH        │ COMPUTE        │  
+ │ (PDF/CSV RAG) │ (CSV only)     │  
+ │               │               │  
+ │ Embeddings    │ Pandas Code    │  
+ │ + Retrieval   │ Generation     │  
+ │               │ + Safe Exec    │  
+ └───────────────┴───────────────┘  
+    ↓  
+Context Aggregation  
+    ↓  
+Final Answer Generation (Gemini)  
     ↓
 Answer + Sources
 ```
@@ -43,6 +55,25 @@ Answer + Sources
 - **Document Processing**: LangChain (PyPDFLoader, RecursiveCharacterTextSplitter)
 - **Data Processing**: Pandas, NumPy
 - **Language**: Python 3.8+
+- **Agent Framework**: Custom iterative reasoning agent (LLM-driven decision making)
+- **Execution Engine**: Safe pandas evaluation layer for dynamic query execution
+
+## 🧠 Intelligent Query Handling
+
+The system dynamically adapts to different query types:
+
+- **Qualitative Questions (PDF/CSV)**  
+  → Uses semantic search + RAG  
+  _Example: "What are the main risks mentioned in the document?"_
+
+- **Quantitative Questions (CSV only)**  
+  → Converts natural language into pandas operations  
+  _Example: "What is the average salary of engineers?"_
+
+- **Hybrid Reasoning**  
+  → Combines retrieval and computation when needed  
+
+This hybrid approach enables both **contextual understanding** and **data-driven insights** within a single interface.
 
 ## 📦 Installation
 
@@ -93,6 +124,13 @@ pypdf>=3.17.0
 
 5. **Download Chat History**
    - Click "Download Chat" button to export conversation
+## 🚀 Advanced Capabilities
+
+- Agentic reasoning loop with iterative decision-making
+- Dynamic query routing (SEARCH vs COMPUTE)
+- Natural language to code translation (pandas)
+- Confidence scoring based on embedding similarity
+- Explainability via retrieved source chunks
 
 ## 💡 Use Cases
 
@@ -101,7 +139,10 @@ pypdf>=3.17.0
 - **Knowledge Management**: Build searchable knowledge bases from PDFs
 - **Research Assistant**: Quick information retrieval from large documents
 - **Data Analytics**: Conversational interface for exploring tabular data
-
+- **AI Data Assistant**: Ask complex analytical questions over structured datasets
+- **Hybrid Knowledge Systems**: Combine unstructured (PDF) and structured (CSV) data
+- **Conversational Analytics**: Replace dashboards with natural language queries
+  
 ## 🔧 Configuration
 
 ### Embedding Model
@@ -158,7 +199,10 @@ The application includes comprehensive error handling for:
 - Input validation prevents injection attacks
 - File size limits prevent memory exhaustion
 - Logging excludes sensitive information
-
+- Sandboxed execution of LLM-generated code (restricted eval environment)
+- Prevention of arbitrary code execution via keyword filtering and scoped evaluation
+- Separation of retrieval and computation pipelines to reduce attack surface
+  
 ## 📈 Future Enhancements
 
 - [ ] Multi-document support (upload multiple files)
