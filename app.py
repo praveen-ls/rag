@@ -9,6 +9,9 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import tempfile
 import os
+import json
+import re
+
 defaults = {
     "api_key": None,
     "llm": None,
@@ -97,6 +100,7 @@ if uploaded_file:
     st.session_state.texts = texts
     st.session_state.embeddings = embeddings
     st.session_state.row_indices=row_indices
+    st.session_state.data_type = metadata['type']
     if metadata['type'] == 'pdf':
         col1, col2, col3 = st.columns(3)
         col1.metric("File", uploaded_file.name)
@@ -173,6 +177,29 @@ def retrieve_rows(query: str, top_k: int = 10):
         results.append((row_idx, row_text, score))
     return results
 
+def safe_exec_pandas(code: str, df: pd.DataFrame):
+    # Allowed variables
+    allowed_globals = {
+        "__builtins__": {},  # block builtins
+    }
+
+    allowed_locals = {
+        "df": df,
+        "pd": pd
+    }
+
+    # Block dangerous patterns
+    forbidden = ["import", "__", "os", "sys", "eval", "exec", "open", "write", "read"]
+
+    if any(word in code.lower() for word in forbidden):
+        return "Unsafe code detected."
+
+    try:
+        result = eval(code, allowed_globals, allowed_locals)
+        return result
+    except Exception as e:
+        return f"Execution error: {str(e)}"
+
 #generating answers for questions using rag
 def rag_answer(query):
     retrieved_rows = retrieve_rows(query)
@@ -214,6 +241,197 @@ def rag_answer(query):
             st.caption(text[:300] + "...")
             st.divider()
     return answer,avg_score, retrieved_rows
+
+def generate_answer(user_question, conversation_history):
+    """
+    Generate final answer from the agent's reasoning history.
+    Concatenates all retrieved rows and asks LLM to answer.
+    """
+    # Combine all rows the agent searched
+    all_rows = []
+    for step in conversation_history:
+        if step["action"] == "search":
+            for _, text, _ in step["results"]:
+                all_rows.append(text)
+    
+    context_block = "\n\n".join(all_rows) if all_rows else "No relevant context found."
+    
+    prompt = f"""
+    You are a helpful assistant. Use ONLY the following information to answer the question.
+
+    Context:
+    {context_block}
+
+    Question:
+    {user_question}
+
+    Now answer clearly, and if the answer is not in the context, say so.
+    """
+    
+    answer = get_resp(prompt)
+    return answer
+
+def parse_json(response_text):
+    """Extract JSON from LLM response and convert to dict"""
+    print(response_text)
+    try:
+        # Sometimes LLM wraps JSON in ```json ```
+        match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+            return json.loads(json_str)
+    except Exception:
+        pass
+
+    # fallback if model responds badly
+    return {
+        "action": "answer",
+        "reasoning": "Could not parse model output",
+        "query": ""
+    }
+
+def pandas_query(query: str):
+    df = st.session_state.df
+
+    if df is None:
+        return "No CSV data available."
+
+    prompt = f"""
+You are a data analyst working with a pandas DataFrame called df.
+
+Columns:
+{list(df.columns)}
+
+STRICT RULES:
+- Output ONLY ONE LINE of pandas code
+- Do NOT explain anything
+- Do NOT import anything
+- Do NOT use print()
+- Only use df
+- Final expression must return a value
+
+Examples:
+df['salary'].mean()
+df[df['age'] > 30]['salary'].max()
+df.groupby('department')['salary'].mean()
+
+User Question:
+{query}
+"""
+
+    code = get_resp(prompt).strip()
+
+    st.code(code, language="python")  # debug UI
+
+    result = safe_exec_pandas(code, df)
+
+    return result
+
+def agentic_rag(user_question):
+    """Agent that reasons and acts iteratively"""
+    
+    max_iterations = 5
+    conversation_history = []
+    
+    for i in range(max_iterations):
+        # Agent thinks about what to do next
+        thought = agent_think(user_question, conversation_history)
+        
+        if thought["action"] == "search":
+            # Agent decides to search
+            results = retrieve_rows(thought["query"])
+            conversation_history.append({
+                "thought": thought["reasoning"],
+                "action": "search",
+                "query": thought["query"],
+                "results": results
+            })
+            
+        elif thought["action"] == "answer":
+            # Agent decides it has enough info
+            final_answer = generate_answer(
+                user_question,
+                conversation_history
+            )
+            return final_answer
+        elif thought["action"] == "compute":
+            if st.session_state.get("data_type") != "csv":
+                # fallback to search instead
+                results = retrieve_rows(user_question)
+                conversation_history.append({
+                    "thought": "Compute not possible on PDF, fallback to search",
+                    "action": "search",
+                    "query": user_question,
+                    "results": results
+                })
+                continue
+            result = pandas_query(thought["query"])
+            conversation_history.append({
+                "thought": thought["reasoning"],
+                "action": "compute",
+                "query": thought["query"],
+                "results": result
+            })   
+        elif thought["action"] == "clarify":
+            # Agent realizes question is ambiguous
+            return "I need clarification: " +  (thought.get("query") or "Please rephrase your question.")
+    
+    return "Could not find sufficient information"
+
+def format_history(history):
+    """Convert agent history into readable text for the LLM"""
+    
+    if not history:
+        return "No previous searches."
+
+    formatted = []
+    for step in history:
+        if step["action"] == "search":
+            formatted.append(
+                f"Agent searched for: {step['query']}\n"
+                f"Reason: {step['thought']}\n"
+                f"Found {len(step['results'])} results."
+            )
+
+    return "\n\n".join(formatted)
+
+
+def agent_think(question, history):
+    """Agent reasons about next step"""
+    data_type = st.session_state.get("data_type", "unknown")
+    prompt = f"""You are a research agent. Given a question and your search history,
+decide what to do next.
+Dataset type: {data_type}
+Question: {question}
+
+Search History:
+{format_history(history)}
+
+Options:
+1. SEARCH - semantic search for qualitative questions
+2. COMPUTE - pandas calculation for quantitative questions 
+   (max, min, count, average, filter, sort). Give 1 line panda code to execute.
+3. ANSWER - when you have enough information
+4. CLARIFY - if question is ambiguous
+
+Rules:
+- Use SEARCH for "what", "why", "how", "explain" questions
+- Use COMPUTE for "maximum", "minimum", "count", "average", "highest", "lowest" questions
+IMPORTANT RULES:
+- If dataset type is "pdf": DO NOT use COMPUTE. Only use SEARCH or ANSWER.
+- If dataset type is "csv": You can use COMPUTE for numerical questions.
+
+Think step by step:
+1. What information do I have?
+2. What information do I still need?
+3. What should I do next?
+
+Respond in JSON:
+{{"action": "search|answer|clarify|compute", "reasoning": "...", "query": "..." }}
+"""
+    
+    response = get_resp(prompt)
+    return parse_json(response)
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -258,6 +476,7 @@ for role, msg, meta in st.session_state.messages:
                     st.caption(preview)
                     st.divider()
 
+
 # ---------------- CHAT INPUT ----------------
 q = st.chat_input("Ask a question about the dataset...", disabled=not ready)
 
@@ -266,7 +485,9 @@ if q:
     st.session_state.messages.append(("user", q,None))
     # Generate answer
     with st.spinner("Thinking..."):
-        answer,avg_score, chunks = rag_answer(q)
+        answer = agentic_rag(q)
+        avg_score = 1.0
+        chunks = []
     # Save assistant message
     st.session_state.messages.append((
         "assistant", 
