@@ -44,8 +44,12 @@ def process_pdf(uploaded_file):
     finally:
         # Clean up temp file
         os.unlink(tmp_path)
+def process_files(file):
+    return _process_files_impl(file)
+
+
 @st.cache_data
-def process_files(uploaded_file):
+def _process_files_impl(uploaded_file):
     name=uploaded_file.name
     if name.endswith(".pdf"):
         texts, page_count = process_pdf(uploaded_file)

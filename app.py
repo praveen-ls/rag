@@ -1,5 +1,5 @@
 import streamlit as st
-from rag_core import process_files, load_model, agentic_rag
+from rag_core import _process_files_impl, load_model, agentic_rag
 from google import genai
 
 defaults = {
@@ -23,7 +23,7 @@ st.title("RAG")
 uploaded_file = st.file_uploader("Choose file", type=['pdf','csv'])
 
 if uploaded_file:  
-    df,texts,embeddings,row_indices,metadata =process_files(uploaded_file)
+    df,texts,embeddings,row_indices,metadata =_process_files_impl(uploaded_file)
     st.session_state.model = load_model()
     st.session_state.df = df
     st.session_state.texts = texts
