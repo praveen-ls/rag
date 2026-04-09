@@ -34,5 +34,4 @@ jobs:
       run: export STREAMLIT_SERVER_HEADLESS=true
       
     - name: Run tests
-      run: |
-        pytest -v
+      run: PYTHONPATH=. pytest -v
