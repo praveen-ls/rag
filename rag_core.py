@@ -45,6 +45,9 @@ def process_pdf(uploaded_file):
         # Clean up temp file
         os.unlink(tmp_path)
 def process_files(file):
+    if hasattr(file, "read"):
+        return _process_files_impl.__wrapped__(file)  # bypass cache
+    
     return _process_files_impl(file)
 
 
