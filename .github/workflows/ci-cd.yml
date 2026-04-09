@@ -26,8 +26,13 @@ jobs:
     - name: Check syntax
       run: |
         python -m py_compile app.py
+        
+    - name: Set PYTHONPATH
+      run: echo "PYTHONPATH=$PYTHONPATH:$(pwd)" >> $GITHUB_ENV
 
-    - name: Run basic test
+    - name: Disable Streamlit warnings
+      run: export STREAMLIT_SERVER_HEADLESS=true
+      
+    - name: Run tests
       run: |
-        pip install pytest
-        pytest 
+        pytest -v
